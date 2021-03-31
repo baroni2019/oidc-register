@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:tls="http://www.mulesoft.org/schema/mule/tls"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/tls http://www.mulesoft.org/schema/mule/tls/current/mule-tls.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd">
+	<http:listener-config name="HTTP_Listener_config" doc:name="HTTP Listener config" doc:id="0fe527c4-519f-4c65-9130-b25ec449bd95" >
+		<http:listener-connection host="0.0.0.0" port="8081" />
+	</http:listener-config>
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="69998672-03f4-414d-9979-e9921a361957" enableCookies="false">
+		<http:request-connection protocol="HTTPS" >
+			<tls:context >
+				<tls:trust-store insecure="true" />
+			</tls:context>
+		</http:request-connection>
+	</http:request-config>
+	<flow name="oidc-register" doc:id="4841421f-af8f-469c-9d2e-3d5bece93a98" >
+		<http:listener doc:name="Listener" doc:id="8d6f58eb-2076-4c1b-a7bf-f4160d516636" config-ref="HTTP_Listener_config" path="/register">
+			<http:response statusCode="#[vars.statusCode]" />
+		</http:listener>
+		<ee:transform doc:name="Transform Request Message" doc:id="5c4f09d8-259e-407b-84fa-fa2e3896debd" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="tokenRequest" ><![CDATA[%dw 2.0
+import * from dw::core::Strings
+import * from dw::core::Binaries
+
+var credentials = fromBase64(substringAfter(attributes.headers['authorization'], "Basic ") as String) as Binary
+output application/json
+---
+{
+	client_id		: substringBefore(credentials,":"),
+	client_secret	: substringAfter(credentials,":"),
+	grant_type		: "client_credentials"
+}]]></ee:set-variable>
+				<ee:set-variable variableName="clientRegister" ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	client_name		:	payload.client_name,
+	redirect_uris	:	payload.redirect_uris,
+	grant_types		:	payload.grant_types
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<http:request method="POST" doc:name="Request Access Token" doc:id="4396a317-1fbb-42e0-b9ca-4092a9205fbe" config-ref="HTTP_Request_configuration" url="https://anypoint.mulesoft.com/accounts/api/v2/oauth2/token">
+			<http:body ><![CDATA[#[vars.tokenRequest]]]></http:body>
+		</http:request>
+		<http:request method="POST" doc:name="Request Client Registration" doc:id="25c77625-bf41-4d3c-86b6-8304751964e9" config-ref="HTTP_Request_configuration" url="https://anypoint.mulesoft.com/accounts/api/connectedApplications">
+			<http:body ><![CDATA[#[vars.clientRegister]]]></http:body>
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Authorization" : "Bearer " ++ payload.access_token
+}]]]></http:headers>
+		</http:request>
+		<ee:transform doc:name="Transform Response Message" doc:id="fdb7e39c-a3e6-48d8-8532-b4ed5267c22c" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+   client_id		: 	payload.client_id,
+   client_secret	:	payload.client_secret,
+   client_secret_expires_at: 0,
+   token_endpoint_auth_method:	"client_secret_basic",
+   redirect_uris	:	payload.redirect_uris,
+   client_name		: payload.client_name
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="statusCode" ><![CDATA[201]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+	</flow>
+	<flow name="oidc-token-instrospect" doc:id="51e601e7-4f82-46c2-a2bc-0951f5f6a05f" >
+		<http:listener doc:name="Listener" doc:id="d902a52f-658e-412a-929a-d7bbf0a4a9cb" config-ref="HTTP_Listener_config" path="/introspect"/>
+		<ee:transform doc:name="Transform Message" doc:id="0aa343ca-1a0f-4910-9d2e-5c94f60b2fa6" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/x-www-form-urlencoded
+---
+{
+	token			:	payload.token,
+	token_type_hint	:	"access_token"
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="token" ><![CDATA[%dw 2.0
+import * from dw::core::Binaries
+output application/java
+---
+{
+	token: toBase64((payload.client_id ++ ":" ++ payload.client_secret) as Binary)
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<http:request method="POST" doc:name="Request" doc:id="a67d743a-785b-4788-bfec-e104686900fa" config-ref="HTTP_Request_configuration" url="https://anypoint.mulesoft.com/accounts/api/v2/oauth2/introspect">
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Authorization" : "Basic " ++ vars.token.token
+}]]]></http:headers>
+		</http:request>
+	</flow>
+</mule>
